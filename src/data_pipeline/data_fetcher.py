@@ -11,7 +11,7 @@ class DataFetcher:
         # Create directory if it doesn't exist
         os.makedirs(data_dir, exist_ok=True)
     
-    def fetch_stock_data(ticker, start_date, end_date):
+    def fetch_stock_data(self,ticker, start_date, end_date):
         """
         Fetch historical stock data for a single ticker
         
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     
     # Fetch last 30 days of Apple stock data
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
     
     print(f"\n=== Fetching AAPL data from {start_date} to {end_date} ===\n")
     

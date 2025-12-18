@@ -33,45 +33,39 @@ class SimpleBacktester:
 
         return data
     
-    def simple_momentum_strategy(self, data):
+    def apply_strategy(self, data, strategy):
         """
-        Simple strategy: Buy if price went up yesterday, sell if it went down
+        Apply a trading strategy to generate signals
         
         Args:
             data: DataFrame with OHLCV data
+            strategy: Strategy object with generate_signals() method
             
         Returns:
-            DataFrame with signals (1 = buy, -1 = sell, 0 = hold)
+            DataFrame with signals
         """
-        df = data.copy()
+        return strategy.generate_signals(data)
         
-        # Calculate daily returns (today's close / yesterday's close - 1)
-        df['Return'] = df['Close'].pct_change()
-        
-        # Generate signals: 1 if yesterday was positive, -1 if negative
-        df['Signal'] = 0
-        df.loc[df['Return'] > 0, 'Signal'] = 1  # Buy signal
-        df.loc[df['Return'] < 0, 'Signal'] = -1  # Sell signal
-        
-        return df
     
-    def execute_backtest(self, data_with_signals):
+    def execute_backtest(self, data_with_signals, warmup_period=50):
         """
         Execute trades based on signals
         
         Args:
             data_with_signals: DataFrame with 'Signal' column
+            warmup_period: Number of days to skip at start (for indicator calculation)
         """
         print("\n=== Running Backtest ===\n")
         
-        for i, row in data_with_signals.iterrows():
+        # Skip warmup period to ensure fair comparison
+        for i, row in data_with_signals.iloc[warmup_period:].iterrows():
             date = row['Date']
             price = row['Close']
             signal = row['Signal']
             
             # BUY signal and we have cash
             if signal == 1 and self.cash > 0:
-                shares_to_buy = int(self.cash / price)  # Buy as many shares as possible
+                shares_to_buy = int(self.cash / price)
                 if shares_to_buy > 0:
                     cost = shares_to_buy * price
                     self.cash -= cost
@@ -131,8 +125,12 @@ class SimpleBacktester:
         }
 
 
-# Test the backtester
+
+# Test the backtester with multiple strategies
 if __name__ == "__main__":
+    import os
+    from strategies import MovingAverageCrossover, RSIStrategy, MomentumStrategy
+    
     # Find the most recent CSV file in data/raw
     data_dir = 'data/raw'
     csv_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
@@ -146,19 +144,60 @@ if __name__ == "__main__":
         csv_path = os.path.join(data_dir, latest_file)
         
         print(f"Using data file: {latest_file}\n")
+        print("=" * 70)
         
-        # Create backtester with $10,000
-        backtester = SimpleBacktester(initial_capital=10000)
+        # Test all three strategies
+        strategies = {
+            'Momentum': MomentumStrategy(),
+            'Moving Average Crossover': MovingAverageCrossover(short_window=20, long_window=50),
+            'RSI': RSIStrategy(period=14, oversold=30, overbought=70)
+        }
         
-        # Load data
-        data = backtester.load_data(csv_path)
+        results = {}
         
-        # Generate trading signals
-        data_with_signals = backtester.simple_momentum_strategy(data)
+        for strategy_name, strategy in strategies.items():
+            print(f"\n{'=' * 70}")
+            print(f"TESTING STRATEGY: {strategy_name}")
+            print('=' * 70)
+            
+            # Create fresh backtester for each strategy
+            backtester = SimpleBacktester(initial_capital=10000)
+            
+            # Load data
+            data = backtester.load_data(csv_path)
+            
+            # Generate trading signals using the strategy
+            # Generate trading signals using the strategy
+            data_with_signals = backtester.apply_strategy(data, strategy)
+
+            # DEBUG: Show what signals were generated
+            print(f"\nDEBUG: Signal counts for {strategy_name}:")
+            print(f"  Buy signals (1): {(data_with_signals['Signal'] == 1).sum()}")
+            print(f"  Sell signals (-1): {(data_with_signals['Signal'] == -1).sum()}")
+            print(f"  Hold signals (0): {(data_with_signals['Signal'] == 0).sum()}")
+            if strategy_name == 'Moving Average Crossover':
+                print(f"  Short MA values (non-null): {data_with_signals['Short_MA'].notna().sum()}")
+                print(f"  Long MA values (non-null): {data_with_signals['Long_MA'].notna().sum()}")
+            if strategy_name == 'RSI':
+                print(f"  RSI values (non-null): {data_with_signals['RSI'].notna().sum()}")
+                print(f"  RSI min: {data_with_signals['RSI'].min():.2f}")
+                print(f"  RSI max: {data_with_signals['RSI'].max():.2f}")
+            print()
+            # Run backtest
+            backtester.execute_backtest(data_with_signals)
+            
+            # Calculate performance
+            final_price = data_with_signals.iloc[-1]['Close']
+            result = backtester.calculate_performance(final_price)
+            
+            results[strategy_name] = result
         
-        # Run backtest
-        backtester.execute_backtest(data_with_signals)
+        # Summary comparison
+        print("\n" + "=" * 70)
+        print("STRATEGY COMPARISON")
+        print("=" * 70)
+        print(f"{'Strategy':<30} {'Return':<15} {'Final Value':<15} {'Trades':<10}")
+        print("-" * 70)
         
-        # Calculate performance
-        final_price = data_with_signals.iloc[-1]['Close']
-        results = backtester.calculate_performance(final_price)
+        for strategy_name, result in results.items():
+            print(f"{strategy_name:<30} {result['total_return']:>6.2f}% {result['final_value']:>12.2f} {result['num_trades']:>8}")
