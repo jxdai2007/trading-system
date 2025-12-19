@@ -98,8 +98,10 @@ class SimpleBacktester:
                 
                 self.shares = 0
     
-    def calculate_performance(self, final_price):
-        """Calculate final performance metrics"""
+    def calculate_performance(self, final_price, data_with_signals):
+        """Calculate comprehensive performance metrics"""
+        import numpy as np
+        
         # Final portfolio value
         final_value = self.cash + (self.shares * final_price)
         
@@ -109,19 +111,128 @@ class SimpleBacktester:
         # Profit/Loss
         profit_loss = final_value - self.initial_capital
         
+        # Calculate daily returns for Sharpe ratio and drawdown
+        if len(self.trades) > 0:
+            # Build portfolio value series
+            portfolio_values = []
+            cash = self.initial_capital
+            shares = 0
+            
+            # Create a dictionary of trades by date for efficient lookup
+            trades_by_date = {}
+            for trade in self.trades:
+                date = trade['Date']
+                if date not in trades_by_date:
+                    trades_by_date[date] = []
+                trades_by_date[date].append(trade)
+            
+            for _, row in data_with_signals.iterrows():
+                price = row['Close']
+                date = row['Date']
+                
+                # Check if we made a trade this day
+                if date in trades_by_date:
+                    # Process all trades on this day in order
+                    for trade in trades_by_date[date]:
+                        if trade['Action'] == 'BUY':
+                            # trade['Shares'] is shares bought in this trade, so add to cumulative
+                            shares += trade['Shares']
+                            cash = trade['Cash']
+                        elif trade['Action'] == 'SELL':
+                            # After sell, shares go to 0
+                            shares = 0
+                            cash = trade['Cash']
+                
+                # Portfolio value = cash + (shares held * current price)
+                portfolio_value = cash + (shares * price)
+                portfolio_values.append(portfolio_value)
+            
+            # Calculate daily returns
+            portfolio_series = pd.Series(portfolio_values)
+            daily_returns = portfolio_series.pct_change().dropna()
+            
+            # Sharpe Ratio (annualized, assuming 252 trading days)
+            if len(daily_returns) > 0 and daily_returns.std() > 0:
+                sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+            else:
+                sharpe_ratio = 0
+            
+            # Maximum Drawdown (calculated from portfolio values, not returns)
+            portfolio_series = pd.Series(portfolio_values)
+            running_max = portfolio_series.expanding().max()
+            drawdown = (portfolio_series - running_max) / running_max
+            max_drawdown = drawdown.min() * 100
+            
+            
+            # Win Rate and Average Trade Return
+            winning_trades = 0
+            losing_trades = 0
+            trade_returns = []
+            
+            # Pair up buy/sell trades properly
+            # Track open positions: each BUY adds shares at a price, each SELL closes all shares
+            # We'll use weighted average cost basis for simplicity
+            total_shares = 0
+            total_cost = 0.0  # Total cost basis for all shares held
+            
+            for trade in self.trades:
+                if trade['Action'] == 'BUY':
+                    # Add shares to our position
+                    shares_bought = trade['Shares']
+                    buy_price = trade['Price']
+                    total_cost += shares_bought * buy_price
+                    total_shares += shares_bought
+                elif trade['Action'] == 'SELL':
+                    # Close all positions - calculate return based on average cost basis
+                    if total_shares > 0:
+                        avg_buy_price = total_cost / total_shares
+                        sell_price = trade['Price']
+                        trade_return = ((sell_price - avg_buy_price) / avg_buy_price) * 100
+                        trade_returns.append(trade_return)
+                        
+                        if trade_return > 0:
+                            winning_trades += 1
+                        else:
+                            losing_trades += 1
+                        
+                        # Reset position tracking after selling all shares
+                        total_shares = 0
+                        total_cost = 0.0
+            
+            # Note: If total_shares > 0 at end, we have an open position (not counted in win rate)
+            
+            total_closed_trades = winning_trades + losing_trades
+            win_rate = (winning_trades / total_closed_trades * 100) if total_closed_trades > 0 else 0
+            avg_trade_return = np.mean(trade_returns) if trade_returns else 0
+            
+        else:
+            sharpe_ratio = 0
+            max_drawdown = 0
+            win_rate = 0
+            avg_trade_return = 0
+        
         print("\n=== Backtest Results ===")
         print(f"Initial Capital: ${self.initial_capital:.2f}")
         print(f"Final Value: ${final_value:.2f}")
         print(f"Profit/Loss: ${profit_loss:.2f}")
         print(f"Total Return: {total_return:.2f}%")
         print(f"Number of Trades: {len(self.trades)}")
+        print(f"\n=== Risk Metrics ===")
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+        print(f"Maximum Drawdown: {max_drawdown:.2f}%")
+        print(f"Win Rate: {win_rate:.2f}%")
+        print(f"Avg Trade Return: {avg_trade_return:.2f}%")
         
         return {
             'initial_capital': self.initial_capital,
             'final_value': final_value,
             'profit_loss': profit_loss,
             'total_return': total_return,
-            'num_trades': len(self.trades)
+            'num_trades': len(self.trades),
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'win_rate': win_rate,
+            'avg_trade_return': avg_trade_return
         }
 
 
@@ -170,34 +281,34 @@ if __name__ == "__main__":
             # Generate trading signals using the strategy
             data_with_signals = backtester.apply_strategy(data, strategy)
 
-            # DEBUG: Show what signals were generated
-            print(f"\nDEBUG: Signal counts for {strategy_name}:")
-            print(f"  Buy signals (1): {(data_with_signals['Signal'] == 1).sum()}")
-            print(f"  Sell signals (-1): {(data_with_signals['Signal'] == -1).sum()}")
-            print(f"  Hold signals (0): {(data_with_signals['Signal'] == 0).sum()}")
-            if strategy_name == 'Moving Average Crossover':
-                print(f"  Short MA values (non-null): {data_with_signals['Short_MA'].notna().sum()}")
-                print(f"  Long MA values (non-null): {data_with_signals['Long_MA'].notna().sum()}")
-            if strategy_name == 'RSI':
-                print(f"  RSI values (non-null): {data_with_signals['RSI'].notna().sum()}")
-                print(f"  RSI min: {data_with_signals['RSI'].min():.2f}")
-                print(f"  RSI max: {data_with_signals['RSI'].max():.2f}")
-            print()
             # Run backtest
             backtester.execute_backtest(data_with_signals)
             
             # Calculate performance
             final_price = data_with_signals.iloc[-1]['Close']
-            result = backtester.calculate_performance(final_price)
+            result = backtester.calculate_performance(final_price, data_with_signals)
             
             results[strategy_name] = result
         
         # Summary comparison
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 100)
         print("STRATEGY COMPARISON")
-        print("=" * 70)
-        print(f"{'Strategy':<30} {'Return':<15} {'Final Value':<15} {'Trades':<10}")
-        print("-" * 70)
+        print("=" * 100)
+        print(f"{'Strategy':<30} {'Return':<12} {'Sharpe':<10} {'Max DD':<12} {'Win Rate':<12} {'Trades':<10}")
+        print("-" * 100)
         
         for strategy_name, result in results.items():
-            print(f"{strategy_name:<30} {result['total_return']:>6.2f}% {result['final_value']:>12.2f} {result['num_trades']:>8}")
+            print(f"{strategy_name:<30} "
+                  f"{result['total_return']:>8.2f}% "
+                  f"{result['sharpe_ratio']:>8.2f} "
+                  f"{result['max_drawdown']:>9.2f}% "
+                  f"{result['win_rate']:>9.2f}% "
+                  f"{result['num_trades']:>8}")
+        
+        print("\n" + "=" * 100)
+        print("METRICS EXPLAINED:")
+        print("  Return: Total percentage gain/loss")
+        print("  Sharpe: Risk-adjusted return (higher is better, >1 is good, >2 is excellent)")
+        print("  Max DD: Worst peak-to-trough decline (lower is better)")
+        print("  Win Rate: Percentage of profitable trades")
+        print("=" * 100)
